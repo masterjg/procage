@@ -1,0 +1,69 @@
+name: node-proxy release
+
+# Fork-only: builds the npm addon with the proxy option and attaches the
+# packed tarball to a GitHub release, so the fs plugin can depend on a URL.
+on:
+  push:
+    tags: ["node-proxy-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  addon:
+    name: addon ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build, pack and test from the packed package
+        run: bindings/nodejs/build.sh all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-${{ matrix.os }}
+          path: bindings/nodejs/procage.*.node
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: addon
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-*
+          merge-multiple: true
+          path: bindings/nodejs
+      - name: Pack
+        run: bindings/nodejs/build.sh pack "$PWD/npm"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --generate-notes --title "procage node $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" npm/procage-*.tgz --clobber
